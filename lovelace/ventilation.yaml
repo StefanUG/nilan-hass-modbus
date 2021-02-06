@@ -1,0 +1,89 @@
+title: Ventilation
+views:
+  - title: Climate
+    path: climate
+    icon: 'mdi:home-thermometer'
+    panel: false
+    badges: []
+    cards:
+      - elements:
+          - entity: sensor.nilan_temperature_outdoor
+            style:
+              font-size: 150%
+              left: 25%
+              top: 7.0%
+            type: state-label
+          - entity: sensor.nilan_temperature_outlet
+            style:
+              font-size: 150%
+              left: 78.5%
+              top: 7.0%
+            type: state-label
+          - entity: sensor.nilan_temperature_extract
+            style:
+              font-size: 150%
+              left: 75%
+              top: 72%
+            type: state-label
+          - entity: sensor.nilan_temperature_inlet
+            style:
+              font-size: 150%
+              left: 25%
+              top: 72%
+            type: state-label
+          - entity: sensor.nilan_humidity
+            style:
+              font-size: 150%
+              left: 51.0%
+              top: 89%
+            type: state-label
+          - entity: sensor.nilan_fan_speed_in
+            style:
+              font-size: 150%
+              left: 28.0%
+              top: 40%
+            type: state-label
+          - entity: sensor.nilan_fan_speed_out
+            style:
+              font-size: 150%
+              left: 73.0%
+              top: 40%
+            type: state-label
+          - entity: sensor.nilan_heat_exchange
+            style:
+              font-size: 150%
+              left: 51.0%
+              top: 19%
+            type: state-label
+          - entity: input_boolean.nilan
+            style:
+              transform: 'scale(2.5,2.5)'
+              left: 45.5%
+              top: 35%
+            type: state-icon
+            tap_action:
+              action: toggle
+        image: /local/ventilation.svg
+        type: picture-elements
+      - entities:
+          - customTheme: false
+            entity: fan.nilan
+            name: Nilan
+            type: 'custom:fan-control-entity-row'
+        show_header_toggle: false
+        title: null
+        type: entities
+      - type: thermostat
+        entity: climate.nilan_climate
+        name: Nilan
+      - type: entities
+        entities:
+          - entity: input_select.nilan_exhaust_speed
+          - entity: input_datetime.nilan_morning_time
+          - entity: input_select.nilan_morning_speed
+          - entity: input_datetime.nilan_night_time
+          - entity: input_select.nilan_night_speed
+        title: Nilan Configuration
+resources:
+  - url: /local/community/fan-control-entity-row/fan-control-entity-row.js?v2
+    type: module

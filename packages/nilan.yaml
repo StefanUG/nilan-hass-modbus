@@ -1,0 +1,647 @@
+---
+# Modbus Integration
+# https://www.home-assistant.io/integrations/modbus/
+
+modbus:
+  name: nilanhub
+  type: serial
+  method: rtu
+  port: /dev/ttyUSB0
+  baudrate: 19200
+  stopbits: 1
+  bytesize: 8
+  parity: E
+
+  # Climate Control
+  # https://www.home-assistant.io/integrations/climate.modbus/
+
+  climates:
+  - name: Nilan Climate
+    slave: 30
+    data_type: int
+    data_count: 1
+    scale: 0.01
+    max_temp: 28
+    min_temp: 16
+    temp_step: 1
+    scan_interval: 20
+    target_temp_register: 1004 # Holding / Control.TempSet
+    current_temp_register: 207 # Input / Input.T7_Inlet
+    current_temp_register_type: input
+
+# Modbus Switch
+# https://www.home-assistant.io/integrations/switch.modbus/
+
+switch:
+#  Holding / Control.RunSet
+#    1001
+#    User on / off select 
+#    0 : Off
+#    1 : On
+#  For some reason, this switch doesn't work, so using a workaround from:
+#  (reason being it doesn't send quite the right command to the register)
+#  https://community.home-assistant.io/t/modbus-integer-write-out/11989/55
+# - platform: modbus
+#   scan_interval: 20
+#   registers:
+#   - name: Nilan
+#     hub: nilanhub
+#     slave: 30
+#     register: 1001
+#     command_off: 0
+#     command_on: 1
+
+# Workaround for Nilan modbus switch not working
+# Use an input boolean, and an automation to call on/off instead
+# (see automation below)
+input_boolean:
+  nilan:
+    name: Nilan
+    initial: true
+    icon: mdi:fan
+
+input_select:
+  # Input Select to represent the fan speed of the Nilan
+  # the values are set with an automation below
+  nilan_fan_speed:
+    name: Nilan Fan Speed
+    options:
+      - 'off'
+      - 'low'
+      - 'medium'
+      - 'high'
+      - 'very high'
+    initial: medium
+  
+  # Input Select to configure the speed the Nilan should 
+  # start with in the morning
+  nilan_morning_speed:
+    name: Nilan Morning Speed
+    options:
+      - 'off'
+      - 'low'
+      - 'medium'
+      - 'high'
+      - 'very high'
+    initial: 'medium'
+  
+  # Input Select to configure the speed the Nilan should 
+  # go to at night
+  nilan_night_speed:
+    name: Nilan Night Speed
+    options:
+      - 'off'
+      - 'low'
+      - 'medium'
+      - 'high'
+      - 'very high'
+    initial: 'low'
+
+input_datetime:
+  # Input Time to configure the time the Nilan should 
+  # increase speed in the morning
+  nilan_morning_time:
+    name: Nilan Morning Time
+    has_date: false
+    has_time: true
+    initial: '07:30'
+  # Input Time to configure the time the Nilan should 
+  # decrease speed at night
+  nilan_night_time:
+    name: Nilan Night Time
+    has_date: false
+    has_time: true
+    initial: '22:30'
+
+
+fan:
+  # Fan Entity to control the Nilan fan speed
+  - platform: template
+    fans:
+      nilan:
+        friendly_name: "Nilan Fan"
+        value_template: "{{ states('input_boolean.nilan') }}"
+        speed_template: "{{ states('input_select.nilan_fan_speed') }}"
+        turn_on:
+          service: input_boolean.turn_on
+          data:
+            entity_id: input_boolean.nilan
+        turn_off:
+          service: input_boolean.turn_off
+          data:
+            entity_id: input_boolean.nilan
+        set_speed:
+          service: script.nilan_speed
+          data:
+            speed: "{{ speed }}"
+        speeds:
+          - 'off'
+          - 'low'
+          - 'medium'
+          - 'high'
+          - 'very high'
+
+automation:
+  # Toggle Nilan to turn on or off whenever the input boolean changes
+  # This is a workaround to the modbus switch not sending the right commands
+- alias: NILAN - State Toggle
+  description: Nilan State Toggle
+  trigger:
+    platform: state
+    entity_id: input_boolean.nilan
+  action:
+  - service: modbus.write_register
+    data:
+      hub: nilanhub
+      unit: 30
+      address: 1001
+      value: "[{{(states('input_boolean.nilan') == 'on') | int }}, 0]"
+  - delay: 00:00:30
+  - service: automation.trigger
+    entity_id: automation.nilan_mirror_runact
+
+  # Mirror the Nilan run state in the input boolean state whenever it changes
+- alias: NILAN - Mirror RunAct
+  description: Nilan Mirror RunAct
+  trigger:
+    platform: state
+    entity_id: sensor.nilan_running
+  action:
+  - service: automation.turn_off
+    entity_id: automation.nilan_state_toggle
+    data:
+      stop_actions: false
+  - service: >
+      {% if states('sensor.nilan_running') | int == 1 %}
+        input_boolean.turn_on
+      {% else %}
+        input_boolean.turn_off
+      {% endif %}
+    entity_id: input_boolean.nilan
+  - service: automation.turn_on
+    entity_id: automation.nilan_state_toggle
+
+  # Mirror the Nilan ventilation step in the input select state whenever it changes
+- alias: NILAN - Mirror VentSet
+  description: Nilan Mirror VentSet
+  trigger:
+  - platform: state
+    entity_id: sensor.nilan_ventilation_step
+  - platform: state
+    entity_id: input_select.nilan_fan_speed
+  action:
+  - service: input_select.select_option
+    data: 
+      option: >
+        {% if   states('sensor.nilan_ventilation_step') | int == 0 %} off
+        {% elif states('sensor.nilan_ventilation_step') | int == 1 %} low
+        {% elif states('sensor.nilan_ventilation_step') | int == 2 %} medium
+        {% elif states('sensor.nilan_ventilation_step') | int == 3 %} high
+        {% elif states('sensor.nilan_ventilation_step') | int == 4 %} very high
+        {% endif %}
+    entity_id: input_select.nilan_fan_speed
+
+- alias: NILAN - Startup states
+  description: Nilan Startup States
+  # Set the states of inputs to their actual values from the sensors
+  trigger:
+    platform: homeassistant
+    event: start  
+  action:
+  - delay: 00:00:35
+  - service: automation.trigger
+    entity_id: automation.nilan_mirror_runact   
+  - service: automation.trigger
+    entity_id: automation.nilan_mirror_ventset
+
+
+  # Trigger to set the default fan speed for Nilan based on the user input for day and night time and speeds
+- alias: NILAN - Morning and Night Speeds
+  description: Nilan Morning Night Speeds
+  trigger:
+  - platform: time
+    at: input_datetime.nilan_morning_time
+  - platform: time
+    at: input_datetime.nilan_night_time
+  action:
+  - service: script.nilan_default_speed
+
+
+
+script:
+  # This script is a helper script for the fan template.
+  # If you want to set the speed, you should call `fan.set_speed`
+  # rather than calling this script directly
+  nilan_speed:
+    alias: Change Nilan Fan Speed
+    # Control.VentSet
+    # Holding / 1003
+    # Unit: Step
+    # User ventilation step select
+    # 0 : Off
+    # 1..4 : Step number
+    sequence:
+    - service: modbus.write_register
+      data:
+        hub: nilanhub
+        unit: 30
+        address: 1003
+        value: >
+          {% if speed == 'off' %}
+            [0, 0]
+          {% elif speed == 'low' %}
+            [1, 0]
+          {% elif speed == 'medium' %}
+            [2, 0]
+          {% elif speed == 'high' %}
+            [3, 0]
+          {% endif %}
+
+
+  # This script sets the nilan speed according to the configured speed
+  # according to the time of day (night or day)
+  nilan_default_speed:
+    alias: Set Nilan to Default Speed
+    sequence:
+    - service: fan.set_speed
+      entity_id: fan.nilan
+      data:
+        speed: >
+          {% if strptime(now().strftime('%H:%M'), '%H:%M') >= strptime(states('input_datetime.nilan_morning_time'), '%H:%M:%S') and 
+                strptime(now().strftime('%H:%M'), '%H:%M') < strptime(states('input_datetime.nilan_night_time'), '%H:%M:%S') %}
+            {{ states('input_select.nilan_morning_speed') }}
+          {% else %}
+            {{ states('input_select.nilan_night_speed') }}
+          {% endif %}          
+
+
+# Controls needing to be called with service:
+
+  # Control.VentSet 1003
+  # User ventilation step select 
+  # 0 : Off
+  # 1..4 : Step number
+
+  # Control.ModeSet 1002
+  # User operation mode select 0 : Off
+  # 1 : Heat
+  # 2 : Cool
+  # 3 : Auto
+  # 4 : Service
+
+  # Program.Select 500
+  # Week program nb. select 0 : None
+  # 1 : Program 1
+  # 2 : Program 2
+  # 3 : Program 3 
+  # 4 : Erase
+
+
+
+# Register layout:
+# Register addresses are specified as decimal numerals.
+# Input registers are placed in the address area 30001..39999. 
+# Holding registers are placed in the address area 40001..49999.
+# 
+# Register groups
+# The protocol data is grouped into the following address ranges with 100 registers in each group. 
+# This applies to both input and holding register types:
+#
+#  Name            Address  Description 
+#  Device           000      Protocol and controller setup
+#  Discrete I/O     100      Input / output bits (on/off)
+#  Analog I/O       200      Input / output words
+#  Time             300      Clock and calendar
+#  Alarm            400      Alarm and message handling
+#  Week program     500      Calendar based programming
+#  User functions   600      User input function selection
+#  --               700      --
+#  --               800      --
+#  --               900      --
+#  Control          1000     System control and status
+#  AirFlow          1100     Ventilation control
+#  AirTemp          1200     Room temperature control
+#  AirBypass        1300     Exchanger bypass control
+#  AirHeat          1400     Inlet air heater control
+#  Compressor       1500     Compressor operation control
+#  Defrost          1600     Defrosting control
+#  HotWater         1700     Hot water control
+#  CentHeat         1800     Central water heat control (EK)
+#  AirQual          1900     Air quality control (RH, CO2)
+#  User panel       2000     Display and keyboard
+
+
+
+
+
+# Modbus Sensors
+# https://www.home-assistant.io/integrations/sensor.modbus/
+
+
+# Input.T0_Controller 
+# 200 
+# Controller board temperature
+
+# Input.T1_Intake 
+# 201
+# Fresh air intake temperature
+
+# Input.T2_Inlet 
+# 202
+# Inlet temperature (before heater)
+
+# Input.T3_Exhaust 
+# 203
+# Room exhaust temperature
+
+# Input.T4_Outlet 
+# 204
+# Outlet temperature
+
+# Input.T5_Cond 
+# 205
+# Condenser temperature
+
+# Input.T6_Evap 
+# 206
+# Evaporator temperature
+
+# Input.T7_Inlet 
+# 207
+# Inlet temperature (after heater)
+
+# Input.T8_Outdoor 
+# 208
+# Outdoor temperature
+
+# Input.T15_Room 
+# 215
+# User panel room temperature
+
+# Input.RH 
+# 221
+# Humidity (%)
+
+# Input.CO2 
+# 222
+# Carbon dioxide (ppm)
+
+
+
+# Basics gotten from 
+# https://gist.github.com/jakobmoll/c29877d584cc6970e6316173a6e4b561
+
+sensor:
+- platform: modbus
+  #scan_interval: 30
+  registers:
+    #
+    #  HUMIDITY
+    # 
+    - name: Nilan Humidity
+      hub: nilanhub
+      unit_of_measurement: '%'
+      slave: 30
+      register: 221
+      scale: 0.01
+      precision: 2
+      device_class: humidity
+      register_type: input
+
+    #
+    #  CO2
+    # 
+    # - name: Nilan CO2
+    #   # Input / Input.CO2 - Carbon dioxide (ppm)
+    #   hub: nilanhub
+    #   unit_of_measurement: 'ppm'
+    #   slave: 30
+    #   register: 222
+    #   register_type: input
+
+    #
+    #  TEMPERATURE
+    # 
+    - name: Nilan Temperature Outdoor
+      # T8 - (1. Udeluft)
+      hub: nilanhub
+      unit_of_measurement: '°C'
+      slave: 30
+      register: 208
+      scale: 0.01
+      precision: 2
+      count: 1
+      data_type: int
+      device_class: temperature
+      register_type: input
+
+    - name: Nilan Temperature Inlet
+      # T7 after heater, T2 before - (2. Tilluft)
+      hub: nilanhub
+      unit_of_measurement: '°C'
+      slave: 30
+      register: 207
+      scale: 0.01
+      precision: 2
+      count: 1
+      data_type: int
+      device_class: temperature
+      register_type: input
+
+    - name: Nilan Temperature Extract
+      # T3 - Room / extract air - (3. Fraluft)
+      hub: nilanhub
+      unit_of_measurement: '°C'
+      slave: 30
+      register: 203
+      scale: 0.01
+      precision: 2
+      count: 1
+      data_type: int
+      device_class: temperature
+      register_type: input
+
+    - name: Nilan Temperature Outlet
+      # T4 - Outlet - (4. Afkastluft)
+      hub: nilanhub
+      unit_of_measurement: '°C'
+      slave: 30
+      register: 204
+      scale: 0.01
+      precision: 2
+      count: 1
+      data_type: int
+      device_class: temperature
+      register_type: input
+
+
+    - name: Nilan CTS602 Temperature
+      # T0 - Controller
+      hub: nilanhub
+      unit_of_measurement: '°C'
+      slave: 30
+      register: 200
+      scale: 0.01
+      precision: 2
+      count: 1
+      data_type: int
+      device_class: temperature
+      register_type: input
+
+    #
+    # EFFICIENCY
+    #
+    - name: Nilan Heat Exchange
+      # Input / AirTemp.EffPct - Passive heat exchanger efficiency calculation
+      hub: nilanhub
+      unit_of_measurement: '%'
+      scale: 0.01
+      precision: 2
+      slave: 30
+      register: 1204
+      count: 1
+      register_type: input
+
+    #
+    #  FAN SPEED
+    # 
+    - name: Nilan Fan Speed In
+      # Holding / Output.InletSpeed
+      hub: nilanhub
+      unit_of_measurement: '%'
+      scale: 0.01
+      slave: 30
+      register: 201
+      count: 1
+
+    - name: Nilan Fan Speed Out
+      # Holding / Output.ExhaustSpeed
+      hub: nilanhub
+      unit_of_measurement: '%'
+      scale: 0.01
+      slave: 30
+      register: 200
+      count: 1
+
+    #
+    #  MODES
+    # 
+    - name: Nilan Air Mode
+      # Intput / Control.ModeAct
+      # Actual operation mode
+      # 0 : Off
+      # 1 : Heat
+      # 2 : Cool
+      # 3 : Auto
+      # 4 : Service
+      hub: nilanhub
+      slave: 30
+      register: 1001
+      count: 1
+      register_type: input
+
+
+    #
+    #  FILTER
+    # 
+    - name: Nilan Filter Age
+      # Input / AirFlow.SinceFiltDay
+      # Days since last air filter change alarm
+      hub: nilanhub
+      slave: 30
+      register: 1103
+      register_type: input
+
+
+
+    #
+    #  STATES
+    # 
+    - name: Nilan Summer
+      # Summer state
+      # 0 : Off
+      # 1 : On
+      hub: nilanhub
+      slave: 30
+      register: 1200
+      register_type: input
+
+    - name: Nilan Bypass Open
+      hub: nilanhub
+      slave: 30
+      register: 102
+      register_type: input
+
+    # Holding / Program.User2FuncAct
+    # 610
+    # User function 
+    # 0 : None
+    # 1 : Extend
+    # 2 : Inlet
+    # 3 : Exhaust
+    # 4 : External heater offset 
+    # 5 : Ventilate
+    # 6 : Cooker Hood
+    #
+    # Note: This appears to be 5 when the cooking exhaust hood is on
+    #       and 0 otherwise.
+    - name: Nilan User2 Function
+      hub: nilanhub
+      slave: 30
+      register: 610
+      register_type: holding
+
+    # Holding / Output.UserFunc2
+    # 124
+    # User function active
+    # Note: This appears to be 1 when the cooking exhaust hood is on
+    #       and 0 otherwise.
+    - name: Nilan Cooking Exhaust Hood Active
+      hub: nilanhub
+      slave: 30
+      register: 124
+      register_type: holding
+
+    # Holding / Control.RunSet
+    #   1001
+    #   User on / off select 
+    #   0 : Off
+    #   1 : On
+    - name: Nilan Running
+      hub: nilanhub
+      slave: 30
+      register: 1001
+      register_type: holding      
+
+    # Input / Control.RunAct
+    #   1000
+    #   Actual on / off state
+    #   0 : Off
+    #   1 : On
+    # NOTE: This shows 13, when it's actually 1 (ON)
+    # - name: Nilan Running
+    #   hub: nilanhub
+    #   slave: 30
+    #   register: 1000
+
+    # Holding / Control.VentSet 1003
+    # User ventilation step select 
+    # 0 : Off
+    # 1..4 : Step number
+    - name: Nilan Ventilation Step
+      hub: nilanhub
+      slave: 30
+      register: 1003
+      register_type: holding
+
+    # Input / AirFlow.VentSet
+    # 1100
+    # Actual ventilation step set point
+    # 0 : Off
+    # 1..4 : Step number
+    # NOTE: This shows 1, when it's actually on 2
+    # - name: Nilan Ventilation Step
+    #   hub: nilanhub
+    #   slave: 30
+    #   register: 1100
+
